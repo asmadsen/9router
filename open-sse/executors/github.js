@@ -1,6 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
-import { OAUTH_ENDPOINTS, GITHUB_COPILOT } from "../config/appConstants.js";
+import { GITHUB_COPILOT } from "../config/appConstants.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses.js";
 import { openaiResponsesToOpenAIResponse } from "../translator/response/openai-responses.js";
@@ -12,6 +12,58 @@ import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 import { ANTHROPIC_API_VERSION } from "../providers/shared.js";
 import crypto from "crypto";
+import { getGitHubCopilotEndpoints } from "../config/githubCopilot.js";
+import { getCopilotModelEndpoint, resolveCopilotModels } from "../services/copilotModels.js";
+
+function makeNullable(schema) {
+  if (!schema || typeof schema !== "object") return schema;
+  if (Array.isArray(schema.type)) {
+    return schema.type.includes("null") ? schema : { ...schema, type: [...schema.type, "null"] };
+  }
+  if (typeof schema.type === "string") return { ...schema, type: [schema.type, "null"] };
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.some((entry) => entry?.type === "null")
+      ? schema
+      : { ...schema, anyOf: [...schema.anyOf, { type: "null" }] };
+  }
+  return { anyOf: [schema, { type: "null" }] };
+}
+
+export function normalizeCopilotToolSchema(schema, optional = false) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+
+  let normalized = { ...schema };
+  if (Array.isArray(normalized.enum) && Array.isArray(normalized.oneOf)
+    && normalized.oneOf.every((entry) => entry && Object.prototype.hasOwnProperty.call(entry, "const"))) {
+    const choiceDescriptions = normalized.oneOf
+      .filter((entry) => entry.description)
+      .map((entry) => `${JSON.stringify(entry.const)}: ${entry.description}`)
+      .join("; ");
+    if (choiceDescriptions) {
+      normalized.description = [normalized.description, `Values: ${choiceDescriptions}`].filter(Boolean).join("\n");
+    }
+    delete normalized.oneOf;
+  }
+  for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+    if (Array.isArray(normalized[keyword])) {
+      normalized[keyword] = normalized[keyword].map((entry) => normalizeCopilotToolSchema(entry));
+    }
+  }
+  if (normalized.items) normalized.items = normalizeCopilotToolSchema(normalized.items);
+
+  if (normalized.type === "object" || normalized.properties) {
+    const properties = normalized.properties || {};
+    const originallyRequired = new Set(Array.isArray(normalized.required) ? normalized.required : []);
+    normalized.properties = Object.fromEntries(Object.entries(properties).map(([name, propertySchema]) => [
+      name,
+      normalizeCopilotToolSchema(propertySchema, !originallyRequired.has(name)),
+    ]));
+    normalized.required = Object.keys(properties);
+    normalized.additionalProperties = false;
+  }
+
+  return optional ? makeNullable(normalized) : normalized;
+}
 
 export class GithubExecutor extends BaseExecutor {
   constructor() {
@@ -29,8 +81,8 @@ export class GithubExecutor extends BaseExecutor {
     return /claude/i.test(model || "");
   }
 
-  buildUrl(model, stream, urlIndex = 0) {
-    return this.config.baseUrl;
+  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+    return getGitHubCopilotEndpoints(credentials?.providerSpecificData).chatCompletionsUrl;
   }
 
   buildHeaders(credentials, stream = true) {
@@ -120,22 +172,61 @@ export class GithubExecutor extends BaseExecutor {
     return !(m.includes("gemini") || m.includes("claude"));
   }
 
+  prefersResponsesEndpoint(model, catalogModel = null) {
+    if (!this.supportsResponsesEndpoint(model)) return false;
+    if (catalogModel) return getCopilotModelEndpoint(catalogModel) === "responses";
+    return /^gpt-5\.6(?:-|$)/i.test(model || "");
+  }
+
+  transformResponsesRequest(model, body, stream, credentials) {
+    const transformedBody = openaiToOpenAIResponsesRequest(model, body, stream, credentials);
+
+    if (Array.isArray(transformedBody.tools)) {
+      transformedBody.tools = transformedBody.tools.map((tool) => tool?.type === "function"
+        ? { ...tool, parameters: normalizeCopilotToolSchema(tool.parameters), strict: true }
+        : tool);
+    }
+
+    return transformedBody;
+  }
+
   async execute(options) {
-    const { model, log } = options;
+    const { model, log, credentials, proxyOptions = null } = options;
 
     // Claude models: route to Copilot's Anthropic-native /v1/messages shim — the only
     // Copilot endpoint that surfaces prompt-cache token counts for Claude. Detected by
     // model NAME (not a registry field): Copilot's live model catalog regularly exposes
     // claude-* variants the static registry hasn't caught up with yet (see registry/github.js).
     if (this.isClaudeModel(model)) {
-      log?.debug("GITHUB", `Using /v1/messages route for ${model}`);
+      log?.debug("GITHUB", `${model} route=/v1/messages source=model-family`);
       return this.executeWithMessagesEndpoint(options);
+    }
+
+    // The live catalog is authoritative for endpoint support. Newer GPT models
+    // can advertise both endpoints but return an empty HTTP 200 from chat, so
+    // prefer /responses whenever the catalog offers it.
+    if (credentials) {
+      const catalog = await resolveCopilotModels(credentials, { log, proxyOptions });
+      const catalogModel = catalog?.models?.find((entry) => entry.id === model);
+      const catalogEndpoints = catalogModel?.supportedEndpoints?.join(",") || "none";
+      log?.debug("GITHUB", `${model} catalog=${catalogModel ? "matched" : "missing"} endpoints=${catalogEndpoints}`);
+      if (catalogModel && this.prefersResponsesEndpoint(model, catalogModel)) {
+        this.knownCodexModels.add(model);
+        log?.debug("GITHUB", `${model} route=/responses source=catalog`);
+        return this.executeWithResponsesEndpoint(options);
+      }
+    }
+
+    if (this.prefersResponsesEndpoint(model)) {
+      this.knownCodexModels.add(model);
+      log?.debug("GITHUB", `${model} route=/responses source=model-family`);
+      return this.executeWithResponsesEndpoint(options);
     }
 
     // Only use /responses for models that are explicitly known to need it (e.g. gpt codex models)
     // and that the /responses endpoint actually serves (excludes Gemini/Claude, see #1062).
     if (this.knownCodexModels.has(model) && this.supportsResponsesEndpoint(model)) {
-      log?.debug("GITHUB", `Using cached /responses route for ${model}`);
+      log?.debug("GITHUB", `${model} route=/responses source=cache`);
       return this.executeWithResponsesEndpoint(options);
     }
 
@@ -146,6 +237,7 @@ export class GithubExecutor extends BaseExecutor {
       body: this.sanitizeMessagesForChatCompletions(options.body)
     };
 
+    log?.debug("GITHUB", `${model} route=/chat/completions source=default`);
     const result = await super.execute({ ...sanitizedOptions, proxyOptions: options.proxyOptions || null });
 
     // Only escalate to /responses for models that endpoint can actually serve.
@@ -165,12 +257,12 @@ export class GithubExecutor extends BaseExecutor {
   }
 
   async executeWithResponsesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const url = this.config.responsesUrl;
+    const url = getGitHubCopilotEndpoints(credentials?.providerSpecificData).responsesUrl;
     const headers = this.buildHeaders(credentials, stream);
 
-    const transformedBody = openaiToOpenAIResponsesRequest(model, body, stream, credentials);
+    const transformedBody = this.transformResponsesRequest(model, body, stream, credentials);
 
-    log?.debug("GITHUB", "Sending translated request to /responses");
+    log?.debug("GITHUB", `${model} POST ${url}`);
 
     const response = await proxyAwareFetch(url, {
       method: "POST",
@@ -178,6 +270,8 @@ export class GithubExecutor extends BaseExecutor {
       body: JSON.stringify(transformedBody),
       signal
     }, proxyOptions);
+
+    log?.debug("GITHUB", `${model} upstream=${response.status} content-type=${response.headers?.get?.("content-type") || "unknown"}`);
 
     if (!response.ok) {
       return { response, url, headers, transformedBody };
@@ -188,6 +282,12 @@ export class GithubExecutor extends BaseExecutor {
 
     const decoder = new TextDecoder();
     let buffer = "";
+    const convertEvent = (parsed, controller) => {
+      const converted = openaiResponsesToOpenAIResponse(parsed, state);
+      if (converted) {
+        controller.enqueue(new TextEncoder().encode(formatSSE(converted, "openai")));
+      }
+    };
 
     const transformStream = new TransformStream({
       async transform(chunk, controller) {
@@ -208,21 +308,14 @@ export class GithubExecutor extends BaseExecutor {
             continue;
           }
 
-          const converted = openaiResponsesToOpenAIResponse(parsed, state);
-          if (converted) {
-            const sseString = formatSSE(converted, "openai");
-            controller.enqueue(new TextEncoder().encode(sseString));
-          }
+          convertEvent(parsed, controller);
         }
       },
       flush(controller) {
         if (buffer.trim()) {
           const parsed = parseSSELine(buffer.trim());
           if (parsed && !parsed.done) {
-            const converted = openaiResponsesToOpenAIResponse(parsed, state);
-            if (converted) {
-              controller.enqueue(new TextEncoder().encode(formatSSE(converted, "openai")));
-            }
+            convertEvent(parsed, controller);
           }
         }
       }
@@ -250,7 +343,7 @@ export class GithubExecutor extends BaseExecutor {
   // This is what makes prepareClaudeRequest() (translator/formats/claude.js) inject
   // cache_control — /chat/completions never gets there, so it never sees cache tokens.
   async executeWithMessagesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const url = this.config.messagesUrl;
+    const url = getGitHubCopilotEndpoints(credentials?.providerSpecificData).messagesUrl;
     const headers = this.buildHeaders(credentials, stream);
 
     // Force stream:true upstream regardless of client preference, same as
@@ -265,7 +358,7 @@ export class GithubExecutor extends BaseExecutor {
     const toolNameMap = transformedBody._toolNameMap;
     delete transformedBody._toolNameMap;
 
-    log?.debug("GITHUB", "Sending translated request to /v1/messages");
+    log?.debug("GITHUB", `${model} POST ${url}`);
 
     const response = await proxyAwareFetch(url, {
       method: "POST",
@@ -340,9 +433,11 @@ export class GithubExecutor extends BaseExecutor {
     };
   }
 
-  async refreshCopilotToken(githubAccessToken, log, proxyOptions = null) {
+  async refreshCopilotToken(githubAccessToken, log, proxyOptions = null, providerSpecificData = {}) {
     try {
-      const response = await proxyAwareFetch("https://api.github.com/copilot_internal/v2/token", {
+      const tokenUrl = getGitHubCopilotEndpoints(providerSpecificData).copilotTokenUrl;
+      if (!tokenUrl) return { token: githubAccessToken };
+      const response = await proxyAwareFetch(tokenUrl, {
         headers: {
           "Authorization": `token ${githubAccessToken}`,
           "User-Agent": GITHUB_COPILOT.USER_AGENT,
@@ -366,7 +461,7 @@ export class GithubExecutor extends BaseExecutor {
     }
   }
 
-  async refreshGitHubToken(refreshToken, log, proxyOptions = null) {
+  async refreshGitHubToken(refreshToken, log, proxyOptions = null, providerSpecificData = {}) {
     try {
       const params = {
         grant_type: "refresh_token",
@@ -377,7 +472,7 @@ export class GithubExecutor extends BaseExecutor {
         params.client_secret = this.config.clientSecret;
       }
 
-      const response = await proxyAwareFetch(OAUTH_ENDPOINTS.github.token, {
+      const response = await proxyAwareFetch(getGitHubCopilotEndpoints(providerSpecificData).tokenUrl, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
         body: new URLSearchParams(params)
@@ -393,12 +488,12 @@ export class GithubExecutor extends BaseExecutor {
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {
-    let copilotResult = await this.refreshCopilotToken(credentials.accessToken, log, proxyOptions);
+    let copilotResult = await this.refreshCopilotToken(credentials.accessToken, log, proxyOptions, credentials.providerSpecificData);
 
     if (!copilotResult && credentials.refreshToken) {
-      const githubTokens = await this.refreshGitHubToken(credentials.refreshToken, log, proxyOptions);
+      const githubTokens = await this.refreshGitHubToken(credentials.refreshToken, log, proxyOptions, credentials.providerSpecificData);
       if (githubTokens?.accessToken) {
-        copilotResult = await this.refreshCopilotToken(githubTokens.accessToken, log, proxyOptions);
+        copilotResult = await this.refreshCopilotToken(githubTokens.accessToken, log, proxyOptions, credentials.providerSpecificData);
         if (copilotResult) {
           return { ...githubTokens, copilotToken: copilotResult.token, copilotTokenExpiresAt: copilotResult.expiresAt };
         }

@@ -69,7 +69,7 @@ const LIVE_MODEL_RESOLVERS = {
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
     }, { log: console });
-    return result?.models?.length ? { models: result.models } : null;
+    return result ? { models: result.models, authoritative: result.authoritative } : null;
   },
   qoder: async (conn) => resolveQoderLiveModels(conn, "qoder"),
   "qoder-cn": async (conn) => resolveQoderLiveModels(conn, "qoder-cn"),
@@ -488,7 +488,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       if (liveResolver && !hasExplicitEnabledModels) {
         try {
           const live = await liveResolver(conn);
-          if (live?.models?.length) {
+          if (live?.models?.length || live?.authoritative) {
             rawModelIds = live.models.map((m) => m.id);
             liveModelKindById = new Map(
               live.models

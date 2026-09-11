@@ -47,6 +47,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
   const [ideStatus, setIdeStatus] = useState(null);
+  const [githubDeployment, setGithubDeployment] = useState("github.com");
+  const [enterpriseUrl, setEnterpriseUrl] = useState("");
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
@@ -302,6 +304,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         setStep("waiting");
 
         const deviceCodeUrl = new URL(`/api/oauth/${provider}/device-code`, window.location.origin);
+        if (provider === "github" && githubDeployment === "enterprise") {
+          if (!enterpriseUrl.trim()) throw new Error("Enter your GitHub Enterprise URL or domain");
+          deviceCodeUrl.searchParams.set("enterprise_url", enterpriseUrl.trim());
+        }
         if (provider === "kiro" && idcConfig?.startUrl) {
           deviceCodeUrl.searchParams.set("start_url", idcConfig.startUrl);
           if (idcConfig.region) {
@@ -322,7 +328,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         // Pass extraData for Kiro (contains _clientId, _clientSecret) and
         // Qoder (contains _qoderMachineId / _qoderNonce — needed so mapTokens
         // can persist the machine id alongside the token).
-        const extraData = provider === "kiro"
+        const extraData = provider === "github" && data._enterpriseUrl
+          ? { _enterpriseUrl: data._enterpriseUrl }
+          : provider === "kiro"
           ? {
               _clientId: data._clientId,
               _clientSecret: data._clientSecret,
@@ -498,6 +506,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     setAuthMode("browser");
     setPasteToken("");
     setIdeStatus(null);
+    setGithubDeployment("github.com");
+    setEnterpriseUrl("");
     pollingAbortRef.current = false;
     flowRef.current = { proxyStarted: false, proxyProvider: null, stopSent: false };
     // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
@@ -507,7 +517,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         .then((data) => setIdeStatus(data))
         .catch(() => setIdeStatus({ installed: false, path: null }));
     }
-    startOAuthFlowRef.current();
+    if (provider !== "github") startOAuthFlowRef.current();
   }, [isOpen, provider]);
 
   // Cleanup when the modal closes: abort polling and stop the proxy THIS
@@ -764,6 +774,33 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {provider === "github" && !isDeviceCode && step === "waiting" && (
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-medium mb-2">GitHub deployment</p>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant={githubDeployment === "github.com" ? "primary" : "secondary"} onClick={() => setGithubDeployment("github.com")}>GitHub.com</Button>
+                <Button variant={githubDeployment === "enterprise" ? "primary" : "secondary"} onClick={() => setGithubDeployment("enterprise")}>GitHub Enterprise</Button>
+              </div>
+            </div>
+            {githubDeployment === "enterprise" && (
+              <div>
+                <p className="text-sm font-medium mb-2">Enterprise URL or domain</p>
+                <Input
+                  value={enterpriseUrl}
+                  onChange={(e) => setEnterpriseUrl(e.target.value)}
+                  placeholder="company.ghe.com or https://company.ghe.com"
+                  className="font-mono text-xs"
+                />
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button onClick={startOAuthFlow} fullWidth disabled={githubDeployment === "enterprise" && !enterpriseUrl.trim()}>Continue</Button>
+              <Button onClick={handleClose} variant="ghost" fullWidth>Cancel</Button>
+            </div>
+          </div>
+        )}
+
         {/* Proxy OAuth (trae/windsurf/zed): browser flow; paste-token only when configured */}
         {PROXY_OAUTH_PROVIDERS.has(provider) && (step === "waiting" || step === "input" || step === "error") && (
           <>
@@ -841,7 +878,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         )}
 
         {/* Waiting + Manual Input combined (non-device-code, non-proxy) */}
-        {(step === "waiting" || step === "input") && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && (
+        {(step === "waiting" || step === "input") && !isDeviceCode && provider !== "github" && !PROXY_OAUTH_PROVIDERS.has(provider) && (
           <>
             {/* Option A: Auto via popup */}
             <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">

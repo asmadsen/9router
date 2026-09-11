@@ -45,6 +45,7 @@ function useLiveProviderModels(isOpen, connectionIds, label) {
     }
 
     let cancelled = false;
+    setGithubModels(null);
     Promise.all(ids.map(async (connectionId) => {
       const response = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
       if (!response.ok) return [];
@@ -135,6 +136,8 @@ export default function ModelSelectModal({
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
   const [disabledModels, setDisabledModels] = useState({});
+  const [githubModels, setGithubModels] = useState(null);
+
   // Cursor and Cline expose the usable catalog per account, so the static catalog is
   // kept only as a fallback: it goes stale quickly and entitlements differ per account.
   // Single map driven by LIVE_CATALOG_PROVIDERS so the constant cannot drift
@@ -156,6 +159,50 @@ export default function ModelSelectModal({
   const clineModels = useLiveProviderModels(isOpen, clineConnectionIds, "Cline");
   const clinepassModels = useLiveProviderModels(isOpen, clinepassConnectionIds, "ClinePass");
   const zedModels = useLiveProviderModels(isOpen, zedConnectionIds, "Zed");
+  const githubConnectionIds = useMemo(
+    () => activeProviders
+      .filter((provider) => provider.provider === "github" && provider.id && provider.isActive !== false)
+      .map((provider) => provider.id),
+    [activeProviders],
+  );
+  const githubConnectionKey = githubConnectionIds.join("|");
+
+  useEffect(() => {
+    if (!isOpen || githubConnectionIds.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    Promise.all(githubConnectionIds.map(async (connectionId) => {
+      const response = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (!Array.isArray(data.models)) return null;
+      return { models: data.models, authoritative: data.authoritative === true };
+    }))
+      .then((catalogs) => {
+        if (cancelled) return;
+        const successful = catalogs.filter(Boolean);
+        if (!successful.some((catalog) => catalog.authoritative)) {
+          setGithubModels({ connectionKey: githubConnectionKey, models: null });
+          return;
+        }
+
+        const seen = new Set();
+        const models = successful.flatMap((catalog) => catalog.models).filter((model) => {
+          if (!model?.id || seen.has(model.id)) return false;
+          seen.add(model.id);
+          return true;
+        });
+        setGithubModels({ connectionKey: githubConnectionKey, models });
+      })
+      .catch((error) => {
+        console.warn("Unable to load GitHub Copilot models for selector:", error);
+        if (!cancelled) setGithubModels(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [isOpen, githubConnectionIds, githubConnectionKey]);
 
   const fetchCombos = async () => {
     try {
@@ -407,9 +454,12 @@ export default function ModelSelectModal({
         };
       } else {
         const liveModels = providerId === "cursor" ? cursorModels : providerId === "cline" ? clineModels : providerId === "clinepass" ? clinepassModels : providerId === "zed" ? zedModels : [];
-        const hardcodedModels = liveModels.length > 0
-          ? liveModels
-          : getModelsByProviderId(providerId);
+        const currentGithubModels = githubModels?.connectionKey === githubConnectionKey ? githubModels.models : null;
+        const hardcodedModels = providerId === "github" && currentGithubModels !== null
+          ? currentGithubModels
+          : liveModels.length > 0
+            ? liveModels
+            : getModelsByProviderId(providerId);
         const hardcodedIds = new Set(hardcodedModels.map((m) => m.id));
 
         // Custom models: if no hardcoded models (e.g. openrouter), show all aliases for this provider
@@ -500,7 +550,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, githubModels, githubConnectionKey]);
 
   // Parse search query into structured query (regex, positive tokens, negative tokens)
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);

@@ -247,13 +247,16 @@ export async function GET(request, { params }) {
       const startUrl = searchParams.get("start_url");
       const region = searchParams.get("region");
       const authMethod = searchParams.get("auth_method");
+      const enterpriseUrl = searchParams.get("enterprise_url");
       const deviceOptions = provider === "kiro"
         ? {
             ...(startUrl ? { startUrl } : {}),
             ...(region ? { region } : {}),
             ...(authMethod ? { authMethod } : {}),
           }
-        : undefined;
+        : provider === "github" && enterpriseUrl
+          ? { enterpriseUrl }
+          : undefined;
       
       // Providers that don't use PKCE for device code (Grok CLI HAR: plain device_code, no challenge)
       const noPkceDeviceProviders = [

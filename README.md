@@ -985,6 +985,8 @@ Models:
 
 ### GitHub Copilot
 
+When connecting GitHub Copilot, choose **GitHub.com** or **GitHub Enterprise**. For Enterprise, enter the enterprise domain (for example `company.ghe.com`); OAuth runs through that domain and model requests use `https://copilot-api.company.ghe.com`.
+
 ```bash
 Dashboard → Providers → Connect GitHub
 → OAuth via GitHub

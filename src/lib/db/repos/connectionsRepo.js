@@ -171,6 +171,12 @@ export async function createProviderConnection(data) {
           return !!incomingWs && !!existingWs && incomingWs === existingWs;
         }
 
+        if (data.provider === "github") {
+          const incomingHost = data.providerSpecificData?.enterpriseUrl || "github.com";
+          const existingHost = c.providerSpecificData?.enterpriseUrl || "github.com";
+          if (incomingHost !== existingHost) return false;
+        }
+
         // Workspace providers use workspace ID when both sides have it
         const existingWs = c.providerSpecificData?.chatgptAccountId;
         if (incomingWs && existingWs) return incomingWs === existingWs;

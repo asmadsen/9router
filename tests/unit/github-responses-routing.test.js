@@ -6,7 +6,57 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { GithubExecutor } from "../../open-sse/executors/github.js";
+import { GithubExecutor, normalizeCopilotToolSchema } from "../../open-sse/executors/github.js";
+
+describe("normalizeCopilotToolSchema", () => {
+  it("requires all object properties and preserves optionality with null", () => {
+    expect(normalizeCopilotToolSchema({
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        options: {
+          type: "object",
+          properties: { depth: { type: "integer" } },
+        },
+      },
+      required: ["path"],
+    })).toEqual({
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        options: {
+          type: ["object", "null"],
+          properties: { depth: { type: ["integer", "null"] } },
+          required: ["depth"],
+          additionalProperties: false,
+        },
+      },
+      required: ["path", "options"],
+      additionalProperties: false,
+    });
+  });
+
+  it("removes redundant oneOf annotations from enum properties", () => {
+    expect(normalizeCopilotToolSchema({
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["read", "write"],
+          oneOf: [
+            { const: "read", description: "Read data" },
+            { const: "write", description: "Write data" },
+          ],
+        },
+      },
+      required: ["action"],
+    }).properties.action).toEqual({
+      type: "string",
+      enum: ["read", "write"],
+      description: 'Values: "read": Read data; "write": Write data',
+    });
+  });
+});
 
 describe("GithubExecutor.supportsResponsesEndpoint", () => {
   const exec = new GithubExecutor();
@@ -30,6 +80,75 @@ describe("GithubExecutor.supportsResponsesEndpoint", () => {
   it("is null-safe", () => {
     expect(exec.supportsResponsesEndpoint(undefined)).toBe(true);
     expect(exec.supportsResponsesEndpoint("")).toBe(true);
+  });
+});
+
+describe("GithubExecutor.prefersResponsesEndpoint", () => {
+  const exec = new GithubExecutor();
+
+  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
+    "routes %s to /responses without catalog metadata",
+    (model) => {
+      expect(exec.prefersResponsesEndpoint(model)).toBe(true);
+    },
+  );
+
+  it("uses catalog metadata for other OpenAI models", () => {
+    expect(exec.prefersResponsesEndpoint("gpt-next", {
+      supportedEndpoints: ["/chat/completions", "/responses"],
+    })).toBe(true);
+  });
+
+  it("obeys a catalog entry that only advertises chat completions", () => {
+    expect(exec.prefersResponsesEndpoint("gpt-5.6-terra", {
+      supportedEndpoints: ["/chat/completions"],
+    })).toBe(false);
+  });
+
+  it("never routes Claude or Gemini to /responses", () => {
+    const catalogModel = { supportedEndpoints: ["/responses"] };
+    expect(exec.prefersResponsesEndpoint("claude-opus-4.7", catalogModel)).toBe(false);
+    expect(exec.prefersResponsesEndpoint("gemini-3.1-pro-preview", catalogModel)).toBe(false);
+  });
+});
+
+describe("GithubExecutor GPT 5.6 Responses request", () => {
+  it("preserves Chat Completions generation settings", () => {
+    const exec = new GithubExecutor();
+    const requestBody = exec.transformResponsesRequest("gpt-5.6-terra", {
+      messages: [{ role: "user", content: "Hello" }],
+      max_completion_tokens: 32000,
+      reasoning_effort: "medium",
+    }, true, {});
+
+    expect(requestBody.max_output_tokens).toBe(32000);
+    expect(requestBody.reasoning).toEqual({ effort: "medium", summary: "auto" });
+  });
+
+  it("preserves a native Responses API max_output_tokens limit", () => {
+    const exec = new GithubExecutor();
+    const requestBody = exec.transformResponsesRequest("gpt-5.6-terra", {
+      input: [{ role: "user", content: [{ type: "input_text", text: "Hello" }] }],
+      max_output_tokens: 1024,
+    }, true, {});
+
+    expect(requestBody.max_output_tokens).toBe(1024);
+  });
+
+});
+
+describe("GithubExecutor enterprise endpoints", () => {
+  const exec = new GithubExecutor();
+  const credentials = { providerSpecificData: { enterpriseUrl: "company.ghe.com" } };
+
+  it("keeps the public endpoint by default", () => {
+    expect(exec.buildUrl("gpt-5.4", true, 0, {})).toBe("https://api.githubcopilot.com/chat/completions");
+  });
+
+  it("routes chat completions through the enterprise Copilot API", () => {
+    expect(exec.buildUrl("gpt-5.4", true, 0, credentials)).toBe(
+      "https://copilot-api.company.ghe.com/chat/completions",
+    );
   });
 });
 

@@ -185,7 +185,7 @@ export async function pollForToken(providerName, deviceCode, codeVerifier, extra
       let extra = null;
       if (provider.postExchange) {
         try {
-          extra = await provider.postExchange(result.data);
+          extra = await provider.postExchange(result.data, extraData);
         } catch (err) {
           // The grant succeeded but post-login exchange failed (e.g. Muse key
           // mint). The device code is one-shot, so re-polling can never

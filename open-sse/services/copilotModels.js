@@ -13,8 +13,8 @@
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { GITHUB_COPILOT } from "../config/appConstants.js";
 import { refreshCopilotToken } from "./tokenRefresh.js";
+import { getGitHubCopilotEndpoints } from "../config/githubCopilot.js";
 
-const MODELS_URL = "https://api.githubcopilot.com/models";
 const FETCH_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per credential
 
@@ -22,9 +22,9 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per credential
 const catalogCache = new Map();
 
 function cacheKey(credentials) {
-  return credentials?.providerSpecificData?.copilotToken
+  return `${credentials?.providerSpecificData?.enterpriseUrl || "github.com"}:${credentials?.providerSpecificData?.copilotToken
     || credentials?.accessToken
-    || "copilot-anonymous";
+    || "copilot-anonymous"}`;
 }
 
 function buildHeaders(token) {
@@ -39,43 +39,73 @@ function buildHeaders(token) {
   };
 }
 
-async function fetchCatalogRaw(token, signal) {
+async function fetchCatalogRaw(token, providerSpecificData, signal, proxyOptions = null) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await proxyAwareFetch(MODELS_URL, {
+    const response = await proxyAwareFetch(getGitHubCopilotEndpoints(providerSpecificData).modelsUrl, {
       method: "GET",
       headers: buildHeaders(token),
       cache: "no-store",
       signal: signal || controller.signal,
-    });
+    }, proxyOptions);
     if (!response.ok) {
       const err = new Error(`Copilot /models returned ${response.status}`);
       err.status = response.status;
       throw err;
     }
     const data = await response.json();
-    return Array.isArray(data?.data) ? data.data : [];
+    if (!Array.isArray(data?.data)) throw new Error("Copilot /models returned an invalid catalog");
+    return data.data;
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-// Keep only chat models the account is allowed to use. The static registry
-// surfaced disabled/embedding entries inconsistently; here we trust upstream.
-function expandCatalog(raw) {
+// Keep only models GitHub allows in the account's model picker. Newer catalogs
+// omit capabilities.type, so only reject it when it explicitly says non-chat.
+export function expandCopilotCatalog(raw) {
   const seen = new Set();
   const models = [];
   for (const m of raw) {
     if (!m || typeof m !== "object") continue;
-    if (m.capabilities?.type !== "chat") continue;
-    if (m.policy && m.policy.state !== "enabled") continue;
+    if (m.capabilities?.type && m.capabilities.type !== "chat") continue;
+    if (m.policy?.state === "disabled") continue;
+    if (m.model_picker_enabled !== true) continue;
     const id = m.id;
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    models.push({ id, name: m.name || id });
+    const limits = m.capabilities?.limits || {};
+    const supports = m.capabilities?.supports || {};
+    const contextWindow = limits.max_context_window_tokens || limits.max_prompt_tokens;
+    const maxOutput = limits.max_output_tokens;
+    models.push({
+      id,
+      name: m.name || id,
+      version: m.version,
+      supportedEndpoints: m.supported_endpoints,
+      contextLength: contextWindow,
+      maxOutputTokens: maxOutput,
+      capabilities: {
+        ...m.capabilities,
+        ...(Number.isFinite(contextWindow) ? { contextWindow } : {}),
+        ...(Number.isFinite(maxOutput) ? { maxOutput } : {}),
+        ...(typeof supports.tool_calls === "boolean" ? { tools: supports.tool_calls } : {}),
+        ...(typeof supports.vision === "boolean" ? { vision: supports.vision } : {}),
+        reasoning: supports.adaptive_thinking === true
+          || Array.isArray(supports.reasoning_effort)
+          || Number.isFinite(supports.max_thinking_budget),
+      },
+    });
   }
   return models;
+}
+
+export function getCopilotModelEndpoint(model) {
+  const endpoints = Array.isArray(model?.supportedEndpoints) ? model.supportedEndpoints : [];
+  if (endpoints.includes("/v1/messages")) return "messages";
+  if (endpoints.includes("/responses")) return "responses";
+  return "chat";
 }
 
 /**
@@ -103,19 +133,19 @@ export async function resolveCopilotModels(credentials, options = {}) {
   if (!options.forceRefresh) {
     const cached = catalogCache.get(key);
     if (cached && cached.expiresAt > now) {
-      return { models: cached.models };
+      return { models: cached.models, authoritative: true };
     }
   }
 
   let raw;
   try {
-    raw = await fetchCatalogRaw(token, options.signal);
+    raw = await fetchCatalogRaw(token, credentials.providerSpecificData, options.signal, options.proxyOptions);
   } catch (err) {
     // A 401/403 means the Copilot token is stale — refresh from the GitHub
     // access token and retry once.
     if (err && (err.status === 401 || err.status === 403) && credentials.accessToken) {
       options.log?.info?.("COPILOT_MODELS", `Got ${err.status}; refreshing Copilot token`);
-      const refreshed = await refreshCopilotToken(credentials.accessToken);
+      const refreshed = await refreshCopilotToken(credentials.accessToken, undefined, credentials.providerSpecificData);
       if (refreshed?.token) {
         if (typeof options.onCredentialsRefreshed === "function") {
           try {
@@ -128,7 +158,7 @@ export async function resolveCopilotModels(credentials, options = {}) {
           }
         }
         try {
-          raw = await fetchCatalogRaw(refreshed.token, options.signal);
+          raw = await fetchCatalogRaw(refreshed.token, credentials.providerSpecificData, options.signal, options.proxyOptions);
         } catch (err2) {
           options.log?.warn?.("COPILOT_MODELS", `Retry after refresh failed: ${err2?.message || err2}`);
           return null;
@@ -143,11 +173,10 @@ export async function resolveCopilotModels(credentials, options = {}) {
     }
   }
 
-  const models = expandCatalog(raw);
-  if (!models.length) return null;
+  const models = expandCopilotCatalog(raw);
 
   catalogCache.set(key, { expiresAt: now + CACHE_TTL_MS, models });
-  return { models };
+  return { models, authoritative: true };
 }
 
 export function clearCopilotModelCache() {

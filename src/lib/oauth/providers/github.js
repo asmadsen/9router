@@ -1,9 +1,23 @@
 import { GITHUB_CONFIG } from "../constants/oauth.js";
+import { getGitHubCopilotEndpoints, normalizeGitHubEnterpriseUrl } from "open-sse/config/githubCopilot.js";
+
+function resolveConfig(config, enterpriseUrl) {
+  const endpoints = getGitHubCopilotEndpoints({ enterpriseUrl });
+  return {
+    ...config,
+    enterpriseUrl: endpoints.enterpriseUrl,
+    deviceCodeUrl: endpoints.deviceCodeUrl,
+    tokenUrl: endpoints.tokenUrl,
+    userInfoUrl: endpoints.userInfoUrl,
+    copilotTokenUrl: endpoints.copilotTokenUrl,
+  };
+}
 
 const github = {
   config: GITHUB_CONFIG,
   flowType: "device_code",
-  requestDeviceCode: async (config) => {
+  requestDeviceCode: async (config, codeChallenge, options = {}) => {
+    config = resolveConfig(config, options.enterpriseUrl);
     const response = await fetch(config.deviceCodeUrl, {
       method: "POST",
       headers: {
@@ -21,9 +35,11 @@ const github = {
       throw new Error(`Device code request failed: ${error}`);
     }
 
-    return await response.json();
+    const data = await response.json();
+    return config.enterpriseUrl ? { ...data, _enterpriseUrl: config.enterpriseUrl } : data;
   },
-  pollToken: async (config, deviceCode) => {
+  pollToken: async (config, deviceCode, codeVerifier, extraData = {}) => {
+    config = resolveConfig(config, extraData._enterpriseUrl);
     const response = await fetch(config.tokenUrl, {
       method: "POST",
       headers: {
@@ -52,20 +68,25 @@ const github = {
       data: data,
     };
   },
-  postExchange: async (tokens) => {
+  postExchange: async (tokens, extraData = {}) => {
+    const config = resolveConfig(GITHUB_CONFIG, extraData._enterpriseUrl);
     // Get Copilot token using GitHub access token
-    const copilotRes = await fetch(GITHUB_CONFIG.copilotTokenUrl, {
+    const copilotRes = config.copilotTokenUrl ? await fetch(config.copilotTokenUrl, {
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
         Accept: "application/json",
         "X-GitHub-Api-Version": GITHUB_CONFIG.apiVersion,
         "User-Agent": GITHUB_CONFIG.userAgent,
       },
-    });
-    const copilotToken = copilotRes.ok ? await copilotRes.json() : {};
+    }) : null;
+    const copilotToken = copilotRes?.ok
+      ? await copilotRes.json()
+      : config.enterpriseUrl
+        ? { token: tokens.access_token }
+        : {};
 
     // Get user info from GitHub
-    const userRes = await fetch(GITHUB_CONFIG.userInfoUrl, {
+    const userRes = await fetch(config.userInfoUrl, {
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
         Accept: "application/json",
@@ -75,7 +96,7 @@ const github = {
     });
     const userInfo = userRes.ok ? await userRes.json() : {};
 
-    return { copilotToken, userInfo };
+    return { copilotToken, userInfo, enterpriseUrl: config.enterpriseUrl };
   },
   mapTokens: (tokens, extra) => ({
     accessToken: tokens.access_token,
@@ -91,6 +112,7 @@ const github = {
       githubLogin: extra?.userInfo?.login,
       githubName: extra?.userInfo?.name,
       githubEmail: extra?.userInfo?.email,
+      ...(extra?.enterpriseUrl ? { enterpriseUrl: normalizeGitHubEnterpriseUrl(extra.enterpriseUrl) } : {}),
     },
   }),
 };

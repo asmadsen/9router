@@ -3,6 +3,7 @@ import { OAUTH_ENDPOINTS, GITHUB_COPILOT, buildKimiHeaders } from "../../config/
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { dedupRefresh } from "./dedup.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
+import { getGitHubCopilotEndpoints } from "../../config/githubCopilot.js";
 
 let _xaiServiceSingleton = null;
 export async function refreshXaiToken(refreshToken, log) {
@@ -48,7 +49,7 @@ const REFRESH_PROFILES = {
     }),
   },
   github: {
-    url: () => OAUTH_ENDPOINTS.github.token,
+    url: (credentials) => getGitHubCopilotEndpoints(credentials?.providerSpecificData).tokenUrl,
     dedupKey: "github",
     includeClientSecret: (cfg) => !!cfg?.clientSecret,
   },
@@ -58,9 +59,9 @@ const REFRESH_PROFILES = {
   },
 };
 
-function resolveRefreshUrl(provider, config, profile) {
+function resolveRefreshUrl(provider, config, profile, credentials) {
   if (profile?.url) {
-    try { return profile.url(); } catch { /* fall through */ }
+    try { return profile.url(credentials); } catch { /* fall through */ }
   }
   return config?.refreshUrl || PROVIDER_OAUTH[provider]?.tokenUrl || null;
 }
@@ -85,7 +86,7 @@ function buildRefreshBody(profile, config, refreshToken) {
 export async function refreshAccessToken(provider, refreshToken, credentials, log) {
   const config = PROVIDERS[provider];
   const profile = REFRESH_PROFILES[provider] || {};
-  const url = resolveRefreshUrl(provider, config, profile);
+  const url = resolveRefreshUrl(provider, config, profile, credentials);
 
   if (!config || !url) {
     log?.warn?.("TOKEN_REFRESH", `No refresh URL configured for provider: ${provider}`);
@@ -461,15 +462,17 @@ export async function refreshIflowToken(refreshToken, log) {
 }
 
 // GitHub: optional client_secret. Delegate to refreshAccessToken("github", ...).
-export async function refreshGitHubToken(refreshToken, log) {
-  return refreshAccessToken("github", refreshToken, {}, log);
+export async function refreshGitHubToken(refreshToken, providerSpecificData, log) {
+  return refreshAccessToken("github", refreshToken, { providerSpecificData }, log);
 }
 
-export async function refreshCopilotToken(githubAccessToken, log) {
+export async function refreshCopilotToken(githubAccessToken, log, providerSpecificData = {}) {
   if (!githubAccessToken) return null;
+  const { copilotTokenUrl, enterpriseUrl } = getGitHubCopilotEndpoints(providerSpecificData);
+  if (enterpriseUrl) return { token: githubAccessToken };
   return dedupRefresh("copilot", githubAccessToken, async () => {
   try {
-    const response = await fetch(PROVIDER_OAUTH["github"]?.copilotTokenUrl, {
+    const response = await fetch(copilotTokenUrl, {
       headers: {
         "Authorization": `token ${githubAccessToken}`,
         "User-Agent": GITHUB_COPILOT.USER_AGENT,

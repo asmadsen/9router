@@ -15,6 +15,7 @@ import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { resolveClineModels, resolveClinepassModels } from "open-sse/services/clinepassModels.js";
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
 import codexProvider from "open-sse/providers/registry/codex.js";
+import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -230,31 +231,25 @@ const PROVIDER_MODELS_CONFIG = {
     parseResponse: (data) => data.models || []
   },
   github: {
-    url: "https://api.githubcopilot.com/models",
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "Copilot-Integration-Id": "vscode-chat",
-      "editor-version": "vscode/1.107.1",
-      "editor-plugin-version": "copilot-chat/0.26.7",
-      "user-agent": "GitHubCopilotChat/0.26.7"
+    customResolver: async (connection) => {
+      const result = await resolveCopilotModels({
+        accessToken: connection.accessToken,
+        refreshToken: connection.refreshToken,
+        providerSpecificData: connection.providerSpecificData || {},
+      }, {
+        forceRefresh: true,
+        log: console,
+        onCredentialsRefreshed: async (refreshed) => {
+          await updateProviderCredentials(connection.id, {
+            ...refreshed,
+            existingProviderSpecificData: connection.providerSpecificData || {},
+          });
+        },
+      });
+      return result
+        ? { models: result.models, authoritative: result.authoritative }
+        : { models: [], warning: "GitHub Copilot returned no live models; falling back to static catalog." };
     },
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    parseResponse: (data) => {
-      if (!data?.data) return [];
-      // Filter out embeddings, non-chat models, and disabled models
-      return data.data
-        .filter(m => m.capabilities?.type === "chat")
-        .filter(m => m.policy?.state !== "disabled") // Only return explicitly enabled models
-        .map(m => ({
-          id: m.id,
-          name: m.name || m.id,
-          version: m.version,
-          capabilities: m.capabilities,
-          isDefault: m.model_picker_enabled === true
-        }));
-    }
   },
   openai: createOpenAIModelsConfig("https://api.openai.com/v1/models"),
   openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
@@ -645,6 +640,7 @@ export async function GET(request, { params }) {
         provider: connection.provider,
         connectionId: connection.id,
         models: result.models,
+        ...(result.authoritative ? { authoritative: true } : {}),
         ...(result.warning ? { warning: result.warning } : {})
       });
     }

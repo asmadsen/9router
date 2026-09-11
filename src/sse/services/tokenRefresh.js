@@ -47,11 +47,11 @@ export const refreshCodexToken = (refreshToken) =>
 export const refreshIflowToken = (refreshToken) =>
   _refreshIflowToken(refreshToken, log);
 
-export const refreshGitHubToken = (refreshToken) =>
-  _refreshGitHubToken(refreshToken, log);
+export const refreshGitHubToken = (refreshToken, providerSpecificData) =>
+  _refreshGitHubToken(refreshToken, providerSpecificData, log);
 
-export const refreshCopilotToken = (githubAccessToken) =>
-  _refreshCopilotToken(githubAccessToken, log);
+export const refreshCopilotToken = (githubAccessToken, providerSpecificData) =>
+  _refreshCopilotToken(githubAccessToken, log, providerSpecificData);
 
 export const refreshKiroToken = (refreshToken, providerSpecificData) =>
   _refreshKiroToken(refreshToken, providerSpecificData, log);
@@ -294,6 +294,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
   // ── 2. GitHub Copilot token expiry ────────────────────────────────────────
   if (provider === "github") {
+    if (creds.providerSpecificData?.enterpriseUrl) return creds;
     const copilotToken = creds.providerSpecificData?.copilotToken;
     const copilotExpiresAt = creds.providerSpecificData?.copilotTokenExpiresAt
       ? creds.providerSpecificData.copilotTokenExpiresAt * 1000
@@ -307,7 +308,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
         expiresIn: copilotToken ? Math.round(remaining / 1000) : "missing",
       });
 
-      const copilotTokenResult = await refreshCopilotToken(creds.accessToken);
+      const copilotTokenResult = await refreshCopilotToken(creds.accessToken, creds.providerSpecificData);
       if (copilotTokenResult) {
         const updatedSpecific = {
           ...creds.providerSpecificData,
@@ -338,15 +339,16 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
  * @returns {Promise<object|null>} merged credentials or the raw GitHub credentials on Copilot failure
  */
 export async function refreshGitHubAndCopilotTokens(credentials) {
-  const newGitHubCreds = await refreshGitHubToken(credentials.refreshToken);
+  const newGitHubCreds = await refreshGitHubToken(credentials.refreshToken, credentials.providerSpecificData);
   if (!newGitHubCreds?.accessToken) return newGitHubCreds;
 
-  const copilotToken = await refreshCopilotToken(newGitHubCreds.accessToken);
+  const copilotToken = await refreshCopilotToken(newGitHubCreds.accessToken, credentials.providerSpecificData);
   if (!copilotToken) return newGitHubCreds;
 
   return {
     ...newGitHubCreds,
     providerSpecificData: {
+      ...(credentials.providerSpecificData || {}),
       copilotToken:          copilotToken.token,
       copilotTokenExpiresAt: copilotToken.expiresAt,
     },

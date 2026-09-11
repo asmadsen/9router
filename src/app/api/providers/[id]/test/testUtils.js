@@ -29,6 +29,11 @@ import {
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
+import { getGitHubCopilotEndpoints } from "open-sse/config/githubCopilot.js";
+
+export function buildGitHubTestUrl(connection = {}) {
+  return getGitHubCopilotEndpoints(connection.providerSpecificData).modelsUrl;
+}
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -60,11 +65,15 @@ const OAUTH_TEST_CONFIG = {
     refreshable: true,
   },
   github: {
-    url: "https://api.github.com/user",
+    buildUrl: (token, connection) => buildGitHubTestUrl(connection),
     method: "GET",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
-    extraHeaders: { "User-Agent": "9Router", "Accept": "application/vnd.github+json" },
+    extraHeaders: {
+      "User-Agent": "9Router",
+      "Accept": "application/json",
+      "Copilot-Integration-Id": "vscode-chat",
+    },
   },
   iflow: {
     // iFlow getUserInfo requires accessToken as query param, not header
@@ -373,7 +382,9 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     return { valid: true, error: null, refreshed: false, newTokens: null };
   }
 
-  let accessToken = config.useApiKey ? (connection.apiKey || connection.accessToken) : connection.accessToken;
+  let accessToken = connection.provider === "github"
+    ? connection.providerSpecificData?.copilotToken || connection.accessToken
+    : config.useApiKey ? (connection.apiKey || connection.accessToken) : connection.accessToken;
   let refreshed = false;
   let newTokens = null;
 
@@ -438,7 +449,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   }
 
   try {
-    const testUrl = config.buildUrl ? config.buildUrl(accessToken) : config.url;
+    const testUrl = config.buildUrl ? config.buildUrl(accessToken, connection) : config.url;
     const headers = config.noAuth
       ? { ...config.extraHeaders }
       : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
@@ -463,7 +474,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
       const tokens = await refreshOAuthToken(connection);
       if (tokens) {
         const retryToken = config.useApiKey ? (tokens.apiKey || tokens.accessToken) : tokens.accessToken;
-        const retryUrl = config.buildUrl ? config.buildUrl(retryToken) : testUrl;
+        const retryUrl = config.buildUrl ? config.buildUrl(retryToken, connection) : testUrl;
         const retryHeaders = config.noAuth
           ? { ...config.extraHeaders }
           : { [config.authHeader]: `${config.authPrefix}${retryToken}`, ...config.extraHeaders };

@@ -4,7 +4,8 @@
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { PROVIDER_OAUTH } from "../../providers/index.js";
-import { U, parseResetTime } from "./shared.js";
+import { parseResetTime } from "./shared.js";
+import { getGitHubCopilotEndpoints } from "../../config/githubCopilot.js";
 
 // GitHub API config — single source from registry oauth block
 const GITHUB_CONFIG = {
@@ -22,8 +23,13 @@ export async function getGitHubUsage(accessToken, providerSpecificData, proxyOpt
       throw new Error("No GitHub access token available. Please re-authorize the connection.");
     }
 
+    const usageUrl = getGitHubCopilotEndpoints(providerSpecificData).usageUrl;
+    if (!usageUrl) {
+      return { message: "Usage data is not available for GitHub Enterprise Copilot connections." };
+    }
+
     // copilot_internal/user API requires GitHub OAuth token, not copilotToken
-    const response = await proxyAwareFetch(U("github").url, {
+    const response = await proxyAwareFetch(usageUrl, {
       headers: {
         "Authorization": `token ${accessToken}`,
         "Accept": "application/json",
