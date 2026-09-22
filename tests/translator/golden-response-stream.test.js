@@ -50,6 +50,37 @@ describe("GOLDEN response stream: Claude → OpenAI", () => {
     ];
     expect(runStream(FORMATS.CLAUDE, FORMATS.OPENAI, events)).toMatchSnapshot();
   });
+
+  it("keeps thinking out of regular content", () => {
+    const chunks = runStream(FORMATS.CLAUDE, FORMATS.OPENAI, [
+      { type: "message_start", message: { id: "msg_1", model: "claude-opus-5" } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } },
+      { type: "content_block_stop", index: 1 },
+    ]);
+
+    const deltas = chunks.map((chunk) => chunk.choices?.[0]?.delta || {});
+    expect(deltas.some((delta) => delta.reasoning_content === "reasoning")).toBe(true);
+    expect(deltas.some((delta) => String(delta.content || "").includes("<think>"))).toBe(false);
+    expect(deltas.some((delta) => String(delta.content || "").includes("</think>"))).toBe(false);
+    expect(deltas.some((delta) => delta.content === "answer")).toBe(true);
+  });
+
+  it("does not emit tags for an empty thinking block", () => {
+    const chunks = runStream(FORMATS.CLAUDE, FORMATS.OPENAI, [
+      { type: "message_start", message: { id: "msg_1", model: "claude-opus-5" } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } },
+    ]);
+
+    expect(JSON.stringify(chunks)).not.toContain("<think>");
+    expect(JSON.stringify(chunks)).not.toContain("</think>");
+  });
 });
 
 describe("GOLDEN response stream: Gemini → OpenAI", () => {

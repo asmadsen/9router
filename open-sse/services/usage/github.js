@@ -45,62 +45,77 @@ export async function getGitHubUsage(accessToken, providerSpecificData, proxyOpt
       throw new Error(`GitHub API error: ${error}`);
     }
 
-    const data = await response.json();
-
-    // Handle different response formats (paid vs free)
-    if (data.quota_snapshots) {
-      // Paid plan format
-      const snapshots = data.quota_snapshots;
-      const resetAt = parseResetTime(data.quota_reset_date);
-
-      return {
-        plan: data.copilot_plan,
-        resetDate: data.quota_reset_date,
-        quotas: {
-          chat: { ...formatGitHubQuotaSnapshot(snapshots.chat), resetAt },
-          completions: { ...formatGitHubQuotaSnapshot(snapshots.completions), resetAt },
-          premium_interactions: { ...formatGitHubQuotaSnapshot(snapshots.premium_interactions), resetAt },
-        },
-      };
-    } else if (data.monthly_quotas || data.limited_user_quotas) {
-      // Free/limited plan format
-      const monthlyQuotas = data.monthly_quotas || {};
-      const usedQuotas = data.limited_user_quotas || {};
-      const resetAt = parseResetTime(data.limited_user_reset_date);
-
-      return {
-        plan: data.copilot_plan || data.access_type_sku,
-        resetDate: data.limited_user_reset_date,
-        quotas: {
-          chat: {
-            used: usedQuotas.chat || 0,
-            total: monthlyQuotas.chat || 0,
-            unlimited: false,
-            resetAt,
-          },
-          completions: {
-            used: usedQuotas.completions || 0,
-            total: monthlyQuotas.completions || 0,
-            unlimited: false,
-            resetAt,
-          },
-        },
-      };
-    }
-
-    return { message: "GitHub Copilot connected. Unable to parse quota data." };
+    return formatGitHubUsage(await response.json());
   } catch (error) {
     throw new Error(`Failed to fetch GitHub usage: ${error.message}`);
   }
 }
 
+export function formatGitHubUsage(data) {
+  if (data.quota_snapshots) {
+    const resetDate = data.quota_reset_date_utc || data.quota_reset_date;
+    const resetAt = parseResetTime(resetDate);
+
+    return {
+      plan: data.copilot_plan || data.access_type_sku,
+      resetDate,
+      quotas: Object.fromEntries(
+        Object.entries(data.quota_snapshots).map(([name, quota]) => [
+          name,
+          { ...formatGitHubQuotaSnapshot(quota), resetAt },
+        ]),
+      ),
+    };
+  }
+
+  if (data.monthly_quotas || data.limited_user_quotas) {
+    const monthlyQuotas = data.monthly_quotas || {};
+    const remainingQuotas = data.limited_user_quotas || {};
+    const resetDate = data.limited_user_reset_date;
+    const resetAt = parseResetTime(resetDate);
+    const quotaNames = new Set([...Object.keys(monthlyQuotas), ...Object.keys(remainingQuotas)]);
+
+    return {
+      plan: data.copilot_plan || data.access_type_sku,
+      resetDate,
+      quotas: Object.fromEntries([...quotaNames].map((name) => {
+        const total = toFiniteNumber(monthlyQuotas[name]) ?? 0;
+        const remaining = toFiniteNumber(remainingQuotas[name]) ?? 0;
+        return [name, {
+          used: Math.max(0, total - remaining),
+          total,
+          remaining,
+          unlimited: false,
+          resetAt,
+        }];
+      })),
+    };
+  }
+
+  return { message: "GitHub Copilot connected. Unable to parse quota data." };
+}
+
 function formatGitHubQuotaSnapshot(quota) {
   if (!quota) return { used: 0, total: 0, unlimited: true };
 
+  const entitlement = toFiniteNumber(quota.entitlement) ?? 0;
+  const unlimited = quota.unlimited === true || entitlement === -1;
+  const total = unlimited ? 0 : Math.max(0, entitlement);
+  const explicitRemaining = toFiniteNumber(quota.remaining);
+  const percentRemaining = toFiniteNumber(quota.percent_remaining);
+  const remaining = explicitRemaining ?? (percentRemaining == null ? total : total * percentRemaining / 100);
+  const creditsUsed = toFiniteNumber(quota.credits_used);
+
   return {
-    used: quota.entitlement - quota.remaining,
-    total: quota.entitlement,
-    remaining: quota.remaining,
-    unlimited: quota.unlimited || false,
+    used: unlimited ? 0 : Math.max(0, creditsUsed ?? total - remaining),
+    total,
+    remaining: unlimited ? 0 : remaining,
+    unlimited,
   };
+}
+
+function toFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }

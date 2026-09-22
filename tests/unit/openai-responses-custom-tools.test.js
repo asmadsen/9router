@@ -3,6 +3,7 @@ import {
   openaiResponsesToOpenAIRequest,
 } from "../../open-sse/translator/request/openai-responses.js";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
+import { createResponsesApiTransformStream } from "../../open-sse/transformer/responsesTransformer.js";
 import { initState } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
@@ -112,6 +113,7 @@ describe("OpenAI Chat stream → Codex custom_tool_call", () => {
       call_id: "call_exec_2",
       name: "exec",
       input: "const x = await tools.shell({command: 'pwd'});",
+      status: "completed",
     });
     expect(events.some((event) => event.event === "response.function_call_arguments.delta")).toBe(false);
   });
@@ -148,6 +150,33 @@ describe("OpenAI Chat stream → Codex custom_tool_call", () => {
       type: "function_call",
       name: "search",
       arguments: "{\"q\":\"x\"}",
+      status: "completed",
+    });
+  });
+});
+
+describe("Responses stream schema compatibility", () => {
+  it("marks transformed function calls completed for @ai-sdk/openai", async () => {
+    const input = [
+      { id: "chatcmpl-test", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_bash", function: { name: "bash", arguments: "{\"command\":\"pwd\"}" } }] }, finish_reason: null }] },
+      { id: "chatcmpl-test", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+    ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+
+    const response = new Response(input).body
+      .pipeThrough(createResponsesApiTransformStream());
+    const output = await new Response(response).text();
+    const done = output
+      .split("\n\n")
+      .map((event) => event.split("\n").find((line) => line.startsWith("data: "))?.slice(6))
+      .filter(Boolean)
+      .map((data) => { try { return JSON.parse(data); } catch { return null; } })
+      .find((event) => event?.type === "response.output_item.done" && event.item?.type === "function_call");
+
+    expect(done?.item).toMatchObject({
+      call_id: "call_bash",
+      name: "bash",
+      arguments: "{\"command\":\"pwd\"}",
+      status: "completed",
     });
   });
 });

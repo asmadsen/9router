@@ -193,4 +193,3 @@ const convertStopReason = (reason) => toOpenAIFinish(reason, "claude");
 
 // Register
 register(FORMATS.CLAUDE, FORMATS.OPENAI, null, claudeToOpenAIResponse);
-

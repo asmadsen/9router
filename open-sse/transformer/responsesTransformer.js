@@ -213,7 +213,8 @@ export function createResponsesApiTransformStream(logger = null) {
           type: "function_call",
           arguments: args,
           call_id: callId,
-          name: state.funcNames[idx] || ""
+          name: state.funcNames[idx] || "",
+          status: "completed"
         }
       });
 
@@ -440,4 +441,3 @@ export function createResponsesApiTransformStream(logger = null) {
     }
   });
 }
-

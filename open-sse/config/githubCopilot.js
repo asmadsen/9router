@@ -24,8 +24,13 @@ export function normalizeGitHubEnterpriseUrl(value) {
 
 export function getGitHubCopilotEndpoints(providerSpecificData = {}) {
   const enterpriseUrl = normalizeGitHubEnterpriseUrl(providerSpecificData.enterpriseUrl);
+  const isEnterpriseCloud = enterpriseUrl?.endsWith(".ghe.com") === true;
   const githubBaseUrl = enterpriseUrl ? `https://${enterpriseUrl}` : PUBLIC_GITHUB_BASE_URL;
-  const githubApiUrl = enterpriseUrl ? `${githubBaseUrl}/api/v3` : PUBLIC_GITHUB_API_URL;
+  const githubApiUrl = isEnterpriseCloud
+    ? `https://api.${enterpriseUrl}`
+    : enterpriseUrl
+      ? `${githubBaseUrl}/api/v3`
+      : PUBLIC_GITHUB_API_URL;
   const copilotBaseUrl = enterpriseUrl
     ? `https://copilot-api.${enterpriseUrl}`
     : PUBLIC_COPILOT_BASE_URL;
@@ -36,7 +41,7 @@ export function getGitHubCopilotEndpoints(providerSpecificData = {}) {
     tokenUrl: `${githubBaseUrl}/login/oauth/access_token`,
     userInfoUrl: `${githubApiUrl}/user`,
     copilotTokenUrl: enterpriseUrl ? null : `${githubApiUrl}/copilot_internal/v2/token`,
-    usageUrl: enterpriseUrl ? null : `${githubApiUrl}/copilot_internal/user`,
+    usageUrl: enterpriseUrl && !isEnterpriseCloud ? null : `${githubApiUrl}/copilot_internal/user`,
     modelsUrl: `${copilotBaseUrl}/models`,
     chatCompletionsUrl: `${copilotBaseUrl}/chat/completions`,
     responsesUrl: `${copilotBaseUrl}/responses`,
