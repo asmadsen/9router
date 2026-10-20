@@ -33,18 +33,27 @@ export function normalizeCopilotToolSchema(schema, optional = false) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
 
   let normalized = { ...schema };
-  if (Array.isArray(normalized.enum) && Array.isArray(normalized.oneOf)
+  if (Array.isArray(normalized.oneOf)
     && normalized.oneOf.every((entry) => entry && Object.prototype.hasOwnProperty.call(entry, "const"))) {
     const choiceDescriptions = normalized.oneOf
       .filter((entry) => entry.description)
       .map((entry) => `${JSON.stringify(entry.const)}: ${entry.description}`)
       .join("; ");
+    if (!Array.isArray(normalized.enum)) {
+      normalized.enum = normalized.oneOf.map((entry) => entry.const);
+    }
+    if (!normalized.type && normalized.enum.every((value) => typeof value === "string")) {
+      normalized.type = "string";
+    }
     if (choiceDescriptions) {
       normalized.description = [normalized.description, `Values: ${choiceDescriptions}`].filter(Boolean).join("\n");
     }
     delete normalized.oneOf;
+  } else if (Array.isArray(normalized.oneOf)) {
+    normalized.anyOf = normalized.oneOf;
+    delete normalized.oneOf;
   }
-  for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+  for (const keyword of ["anyOf", "allOf"]) {
     if (Array.isArray(normalized[keyword])) {
       normalized[keyword] = normalized[keyword].map((entry) => normalizeCopilotToolSchema(entry));
     }
@@ -232,9 +241,15 @@ export class GithubExecutor extends BaseExecutor {
 
     // Sanitize messages before sending to /chat/completions (gpt/gemini/grok — the
     // endpoint rejects non-text/image_url content parts).
+    // Copilot's chat endpoint can return an empty SSE envelope for stream:false.
+    // Always stream upstream; chatCore buffers SSE when the client requested JSON.
     const sanitizedOptions = {
       ...options,
-      body: this.sanitizeMessagesForChatCompletions(options.body)
+      body: {
+        ...this.sanitizeMessagesForChatCompletions(options.body),
+        stream: true,
+      },
+      stream: true,
     };
 
     log?.debug("GITHUB", `${model} route=/chat/completions source=default`);

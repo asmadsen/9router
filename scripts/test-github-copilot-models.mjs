@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const baseUrl = (process.env.BASE_URL || "http://127.0.0.1:20127").replace(/\/$/, "");
+const baseUrl = (process.env.BASE_URL || "http://127.0.0.1:20127").replace(/\/$/, "").replace(/\/v1$/, "");
 const apiKey = process.env.API_KEY;
 const providerPrefix = process.env.PROVIDER_PREFIX ?? "gh/";
 const modelPattern = process.env.MODEL_PATTERN ? new RegExp(process.env.MODEL_PATTERN, "i") : null;

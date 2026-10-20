@@ -56,6 +56,33 @@ describe("normalizeCopilotToolSchema", () => {
       description: 'Values: "read": Read data; "write": Write data',
     });
   });
+
+  it("converts const-based oneOf properties to enums", () => {
+    expect(normalizeCopilotToolSchema({
+      type: "object",
+      properties: {
+        action: {
+          oneOf: [
+            { const: "session.create", description: "Create a session" },
+            { const: "session.send", description: "Send a prompt" },
+          ],
+        },
+      },
+      required: ["action"],
+    }).properties.action).toEqual({
+      type: "string",
+      enum: ["session.create", "session.send"],
+      description: 'Values: "session.create": Create a session; "session.send": Send a prompt',
+    });
+  });
+
+  it("replaces non-const oneOf unions with supported anyOf unions", () => {
+    expect(normalizeCopilotToolSchema({
+      oneOf: [{ type: "string" }, { type: "number" }],
+    })).toEqual({
+      anyOf: [{ type: "string" }, { type: "number" }],
+    });
+  });
 });
 
 describe("GithubExecutor.supportsResponsesEndpoint", () => {
@@ -171,5 +198,24 @@ describe("GithubExecutor.execute cached-route guard (#1062)", () => {
     expect(respSpy).not.toHaveBeenCalled();
     expect(baseSpy).toHaveBeenCalled();
     expect(result.via).toBe("chat");
+  });
+
+  it("forces upstream chat streaming for non-streaming clients", async () => {
+    const exec = new GithubExecutor();
+    const baseSpy = vi
+      .spyOn(Object.getPrototypeOf(Object.getPrototypeOf(exec)), "execute")
+      .mockResolvedValue({ response: { status: 200 }, via: "chat" });
+
+    await exec.execute({
+      model: "gpt-5.5",
+      body: { stream: false, messages: [{ role: "user", content: "Hello" }] },
+      stream: false,
+      log: null,
+    });
+
+    expect(baseSpy).toHaveBeenCalledWith(expect.objectContaining({
+      stream: true,
+      body: expect.objectContaining({ stream: true }),
+    }));
   });
 });
