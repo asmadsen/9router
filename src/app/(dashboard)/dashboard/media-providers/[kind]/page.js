@@ -3,7 +3,7 @@
 import { useParams, notFound, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Card, Badge, Button, Toggle, AddCustomEmbeddingModal } from "@/shared/components";
+import { Card, Badge, Button, Toggle, AddCustomEmbeddingModal, AddCustomSystemoneModal } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { MEDIA_PROVIDER_KINDS, AI_PROVIDERS, getProvidersByKind } from "@/shared/constants/providers";
 
@@ -144,6 +144,7 @@ export default function MediaProviderKindPage() {
   const [customNodes, setCustomNodes] = useState([]);
   const [combos, setCombos] = useState([]);
   const [showAddCustomEmbedding, setShowAddCustomEmbedding] = useState(false);
+  const [showAddCustomSystemone, setShowAddCustomSystemone] = useState(false);
 
   // webSearch/webFetch listing pages are merged into /web
   useEffect(() => {
@@ -154,6 +155,8 @@ export default function MediaProviderKindPage() {
 
   const kindConfig = MEDIA_PROVIDER_KINDS.find((k) => k.id === kind);
   const isEmbedding = kind === "embedding";
+  const isSystemone = kind === "systemone";
+  const customNodeType = isEmbedding ? "custom-embedding" : isSystemone ? "systemone-compatible" : null;
   const supportsCombo = COMBO_KINDS.has(kind);
 
   useEffect(() => {
@@ -162,10 +165,10 @@ export default function MediaProviderKindPage() {
       .then((r) => r.json())
       .then((d) => setConnections(d.connections || []))
       .catch(() => {});
-    if (isEmbedding) {
+    if (customNodeType) {
       fetch("/api/provider-nodes", { cache: "no-store" })
         .then((r) => r.json())
-        .then((d) => setCustomNodes((d.nodes || []).filter((n) => n.type === "custom-embedding")))
+        .then((d) => setCustomNodes((d.nodes || []).filter((n) => n.type === customNodeType)))
         .catch(() => {});
     }
     if (supportsCombo) {
@@ -174,7 +177,7 @@ export default function MediaProviderKindPage() {
         .then((d) => setCombos(d.combos || []))
         .catch(() => {});
     }
-  }, [isEmbedding, supportsCombo, kindConfig]);
+  }, [customNodeType, supportsCombo, kindConfig]);
 
   if (!kindConfig) return notFound();
 
@@ -184,9 +187,9 @@ export default function MediaProviderKindPage() {
   // Map custom nodes to MediaProviderCard shape
   const customProviders = customNodes.map((n) => ({
     id: n.id,
-    name: n.name || "Custom Embedding",
+    name: n.name || (isSystemone ? "Custom System One" : "Custom Embedding"),
     color: "#6366F1",
-    textIcon: "CE",
+    textIcon: isSystemone ? "S1" : "CE",
   }));
 
   const allProviders = [...providers, ...customProviders];
@@ -229,7 +232,7 @@ export default function MediaProviderKindPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {(isEmbedding || supportsCombo) && (
+      {(isEmbedding || isSystemone || supportsCombo) && (
         <div className="flex items-center justify-end gap-2">
           {supportsCombo && (
             <Button size="sm" icon="add" onClick={handleCreateCombo}>Create Combo</Button>
@@ -237,6 +240,11 @@ export default function MediaProviderKindPage() {
           {isEmbedding && (
             <Button size="sm" icon="add" onClick={() => setShowAddCustomEmbedding(true)}>
               Add Custom Embedding
+            </Button>
+          )}
+          {isSystemone && (
+            <Button size="sm" icon="add" onClick={() => setShowAddCustomSystemone(true)}>
+              Add Custom System One
             </Button>
           )}
         </div>
@@ -272,6 +280,17 @@ export default function MediaProviderKindPage() {
             />
           ))}
         </div>
+      )}
+
+      {isSystemone && (
+        <AddCustomSystemoneModal
+          isOpen={showAddCustomSystemone}
+          onClose={() => setShowAddCustomSystemone(false)}
+          onCreated={(node) => {
+            setCustomNodes((prev) => [...prev, node]);
+            setShowAddCustomSystemone(false);
+          }}
+        />
       )}
 
       {isEmbedding && (

@@ -54,6 +54,12 @@ export async function getModelInfo(modelStr) {
         return { provider: matchedAnthropic.id, model: parsed.model };
       }
 
+      const systemoneNodes = await getProviderNodes({ type: "systemone-compatible" });
+      const matchedSystemone = systemoneNodes.find((node) => node.prefix === parsed.providerAlias);
+      if (matchedSystemone) {
+        return { provider: matchedSystemone.id, model: parsed.model };
+      }
+
       const embeddingNodes = await getProviderNodes({ type: "custom-embedding" });
       const matchedEmbedding = embeddingNodes.find((node) => node.prefix === parsed.providerAlias);
       if (matchedEmbedding) {

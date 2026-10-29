@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { sanitizeSystemoneBaseUrl } from "@/shared/utils/systemoneUrl";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
@@ -46,6 +47,10 @@ export async function PUT(request, { params }) {
       if (sanitizedBaseUrl.endsWith("/embeddings")) {
         sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/embeddings".length);
       }
+    }
+
+    if (node.type === "systemone-compatible") {
+      sanitizedBaseUrl = sanitizeSystemoneBaseUrl(sanitizedBaseUrl);
     }
 
     const updates = {

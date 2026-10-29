@@ -3,9 +3,9 @@
 import { useParams, notFound, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { Card, Badge, Button, AddCustomEmbeddingModal, NoAuthProxyCard, ProviderInfoCard } from "@/shared/components";
+import { Card, Badge, Button, AddCustomEmbeddingModal, AddCustomSystemoneModal, NoAuthProxyCard, ProviderInfoCard } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
-import { MEDIA_PROVIDER_KINDS, AI_PROVIDERS, OAUTH_PROVIDERS, isCustomEmbeddingProvider } from "@/shared/constants/providers";
+import { MEDIA_PROVIDER_KINDS, AI_PROVIDERS, OAUTH_PROVIDERS, isCustomEmbeddingProvider, isSystemoneCompatibleProvider } from "@/shared/constants/providers";
 import ConnectionsCard from "@/app/(dashboard)/dashboard/providers/components/ConnectionsCard";
 import { WEB_LOGIN_PROVIDERS } from "@/app/(dashboard)/dashboard/providers/components/WebLoginButton";
 import ModelsCard from "@/app/(dashboard)/dashboard/providers/components/ModelsCard";
@@ -20,10 +20,12 @@ export default function MediaProviderDetailPage() {
   const { kind, id } = useParams();
   const router = useRouter();
   const kindConfig = MEDIA_PROVIDER_KINDS.find((k) => k.id === kind);
-  const isCustom = isCustomEmbeddingProvider(id) && kind === "embedding";
+  const isCustomSystemone = isSystemoneCompatibleProvider(id) && kind === "systemone";
+  const isCustom = (isCustomEmbeddingProvider(id) && kind === "embedding") || isCustomSystemone;
+  const customLabel = isCustomSystemone ? "System One" : "Embedding";
 
   const handleDeleteCustom = async () => {
-    if (!confirm("Delete this Custom Embedding node?")) return;
+    if (!confirm(`Delete this Custom ${customLabel} node?`)) return;
     try {
       const res = await fetch(`/api/provider-nodes/${id}`, { method: "DELETE" });
       if (res.ok) router.push(`/dashboard/media-providers/${kind}`);
@@ -57,7 +59,7 @@ export default function MediaProviderDetailPage() {
 
   // For custom embedding nodes, build a synthetic provider object
   const provider = isCustom
-    ? (customNode ? { id, name: customNode.name || "Custom Embedding", color: "#6366F1", textIcon: "CE" } : null)
+    ? (customNode ? { id, name: customNode.name || `Custom ${customLabel}`, color: "#6366F1", textIcon: isCustomSystemone ? "S1" : "CE" } : null)
     : builtInProvider;
 
   if (!isCustom && !builtInProvider) return notFound();
@@ -66,7 +68,7 @@ export default function MediaProviderDetailPage() {
     return <div className="text-text-muted text-sm py-12 text-center">Loading...</div>;
   }
 
-  const kinds = isCustom ? ["embedding"] : (provider.serviceKinds ?? ["llm"]);
+  const kinds = isCustom ? [kind] : (provider.serviceKinds ?? ["llm"]);
   if (!isCustom && !kinds.includes(kind)) return notFound();
 
   return (
@@ -205,7 +207,19 @@ export default function MediaProviderDetailPage() {
       {kind === "stt" && !isCustom && <SttExampleCard providerId={id} />}
       {!isCustom && KIND_EXAMPLE_CONFIG[kind] && <GenericExampleCard providerId={id} kind={kind} />}
 
-      {isCustom && (
+      {isCustom && isCustomSystemone && (
+        <AddCustomSystemoneModal
+          isOpen={showEditModal}
+          node={customNode}
+          onClose={() => setShowEditModal(false)}
+          onSaved={(updated) => {
+            setCustomNode(updated);
+            setShowEditModal(false);
+          }}
+        />
+      )}
+
+      {isCustom && !isCustomSystemone && (
         <AddCustomEmbeddingModal
           isOpen={showEditModal}
           node={customNode}

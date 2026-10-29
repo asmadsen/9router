@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 import { isLocalRequest } from "@/dashboardGuard";
+import { sanitizeSystemoneBaseUrl } from "@/shared/utils/systemoneUrl";
 
 // Fetch with timeout wrapper
 const fetchWithTimeout = (url, options, timeout = 10000) => {
@@ -73,6 +74,32 @@ export async function POST(request) {
       } catch {
         return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
       }
+    }
+
+    // System One Validation - minimal POST /systemone; only 401/403 is definitive
+    if (type === "systemone-compatible") {
+      if (!modelId?.trim()) {
+        return NextResponse.json({ valid: false, error: "Model ID required for System One validation" });
+      }
+      const res = await fetchWithTimeout(`${sanitizeSystemoneBaseUrl(baseUrl)}/systemone`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          state: "ping",
+          model: modelId.trim(),
+          questions: { ping: { type: "choice", instructions: "Pick one", criteria: { a: "A", b: "B" } } },
+        }),
+      });
+      if (res.ok) return NextResponse.json({ valid: true, method: "systemone" });
+      if (res.status === 401 || res.status === 403) {
+        return NextResponse.json({ valid: false, error: "API key unauthorized", method: "systemone" });
+      }
+      const errBody = await res.text().catch(() => "");
+      return NextResponse.json({
+        valid: false,
+        error: `System One request failed (${res.status})${errBody ? `: ${errBody.slice(0, 200)}` : ""}`,
+        method: "systemone",
+      });
     }
 
     // Custom Embedding Validation - test POST /embeddings directly

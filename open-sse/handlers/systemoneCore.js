@@ -22,6 +22,14 @@ export function buildSystemoneUrl(override, cfg) {
   if (prefix && host.endsWith(prefix)) return host + path.slice(prefix.length);
   return host + path;
 }
+const VERBOSE = process.env.LOG_SYSTEMONE_VERBOSE === "1";
+
+const maskHeaders = (headers) =>
+  Object.fromEntries(
+    Object.entries(headers).map(([k, v]) =>
+      k.toLowerCase() === "authorization" ? [k, `Bearer ***${String(v).replace(/^Bearer /, "").slice(-4)}`] : [k, v]
+    )
+  );
 
 /**
  * Core System One (Jev) handler — native decision payload pass-through.
@@ -38,8 +46,12 @@ export async function handleSystemoneCore({
   onRequestSuccess,
 }) {
   const { provider, model } = modelInfo;
+  const isCustomNode = provider.startsWith("systemone-compatible-");
   const cfg = PROVIDER_MEDIA[provider]?.systemoneConfig;
-  let targetUrl = buildSystemoneUrl(credentials?.providerSpecificData?.baseUrl, cfg);
+  const nodeBaseUrl = credentials?.providerSpecificData?.baseUrl;
+  let targetUrl = isCustomNode
+    ? (nodeBaseUrl ? `${nodeBaseUrl.replace(/\/+$/, "")}/systemone` : null)
+    : buildSystemoneUrl(nodeBaseUrl, cfg);
   if (!targetUrl) {
     return createErrorResult(
       HTTP_STATUS.BAD_REQUEST,
@@ -74,14 +86,18 @@ export async function handleSystemoneCore({
   const headers = {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(cfg.headers || {}),
+    ...(cfg?.headers || {}),
     // Zen lanes expect the official client session header; other providers don't need it.
-    ...(OPENCODE_PROVIDERS.has(provider) ? { "x-opencode-session": generateSessionId() } : {}),
+    ...(!isCustomNode && OPENCODE_PROVIDERS.has(provider) ? { "x-opencode-session": generateSessionId() } : {}),
   };
   // Cloudflare validates the body model as a short selector (e.g. "clef-flash"), not the full id.
-  const requestBody = { ...body, model: getModelUpstreamId(provider, model) || model };
+  const requestBody = { ...body, model: (!isCustomNode && getModelUpstreamId(provider, model)) || model };
 
   log?.debug?.("SYSTEMONE", `${provider.toUpperCase()} | ${model}`);
+
+  if (VERBOSE) {
+    console.log(`[SYSTEMONE] -> POST ${targetUrl}`, JSON.stringify({ headers: maskHeaders(headers), body: requestBody }, null, 2));
+  }
 
   let providerResponse;
   try {
@@ -97,6 +113,11 @@ export async function handleSystemoneCore({
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("SYSTEMONE", `Fetch error: ${errMsg}`);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+  }
+
+  if (VERBOSE) {
+    const raw = await providerResponse.clone().text().catch(() => "");
+    console.log(`[SYSTEMONE] <- ${providerResponse.status}`, raw);
   }
 
   if (!providerResponse.ok) {

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { createProviderNode, getProviderNodes } from "@/models";
-import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
+import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX, SYSTEMONE_COMPATIBLE_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
+import { sanitizeSystemoneBaseUrl } from "@/shared/utils/systemoneUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,20 @@ export async function POST(request) {
         type: "custom-embedding",
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
+        name: name.trim(),
+      });
+      return NextResponse.json({ node }, { status: 201 });
+    }
+
+    if (nodeType === "systemone-compatible") {
+      if (!baseUrl?.trim()) {
+        return NextResponse.json({ error: "Base URL is required" }, { status: 400 });
+      }
+      const node = await createProviderNode({
+        id: `${SYSTEMONE_COMPATIBLE_PREFIX}${generateId()}`,
+        type: "systemone-compatible",
+        prefix: prefix.trim(),
+        baseUrl: sanitizeSystemoneBaseUrl(baseUrl),
         name: name.trim(),
       });
       return NextResponse.json({ node }, { status: 201 });
